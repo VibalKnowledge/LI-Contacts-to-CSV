@@ -61,17 +61,19 @@
     td {
       padding: 4px 6px;
       border-bottom: 1px solid #e5e7eb;
-      max-width: 100px;
+      max-width: 96px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    td a { color: #0a66c2; text-decoration: none; }
+    td a:hover { text-decoration: underline; }
     #prospect-list { max-height: 200px; overflow-y: auto; margin-top: 8px; }
   </style>
 </head>
 <body>
   <h2>LinkedIn Prospecting</h2>
-  <div id="count">0 prospects saved</div>
+  <div id="count">0 profiles saved</div>
   <button id="scrape-btn" class="btn btn-primary">Add Current Profile</button>
   <button id="export-btn" class="btn btn-secondary">Export CSV</button>
   <button id="clear-btn" class="btn btn-danger">Clear All</button>

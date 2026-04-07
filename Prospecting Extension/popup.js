@@ -15,18 +15,73 @@ function escapeCSV(value) {
   return value;
 }
 
+function escapeHTML(value) {
+  return (value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function normalizeLinkedInProfileUrl(rawUrl) {
+  if (!rawUrl) return "";
+  try {
+    const parsed = new URL(rawUrl);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts[0] === "in" && parts[1]) {
+      return parsed.origin + "/in/" + parts[1] + "/";
+    }
+    return parsed.origin + parsed.pathname;
+  } catch (_err) {
+    return rawUrl;
+  }
+}
+
+function normalizeName(raw) {
+  return (raw || "").replace(/\s+/g, " ").trim();
+}
+
+function deriveNameFromTab(tab) {
+  const title = normalizeName(tab?.title || "");
+  if (title) {
+    const cleaned = title.replace(/\s*\|\s*LinkedIn.*$/i, "").trim();
+    if (cleaned && !/^(LinkedIn|LinkedIn:\s*)$/i.test(cleaned)) return cleaned;
+  }
+
+  try {
+    const parsed = new URL(tab?.url || "");
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts[0] === "in" && parts[1]) {
+      const slug = decodeURIComponent(parts[1]).replace(/[-_]+/g, " ").trim();
+      return slug
+        .split(" ")
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ");
+    }
+  } catch (_err) {
+    // Ignore URL parsing errors.
+  }
+
+  return "";
+}
+
 function renderProspects(prospects) {
-  countEl.textContent = prospects.length + " prospect" + (prospects.length !== 1 ? "s" : "") + " saved";
+  countEl.textContent = prospects.length + " profile" + (prospects.length !== 1 ? "s" : "") + " saved";
   if (prospects.length === 0) {
     listEl.innerHTML = "";
     return;
   }
   const recent = prospects.slice(-10).reverse();
-  let html = "<table><tr><th>Name</th><th>Title</th><th>Company</th></tr>";
+  let html = "<table><tr><th>Name</th><th>LinkedIn URL</th></tr>";
   for (const p of recent) {
-    html += "<tr><td title=\"" + (p.name || "") + "\">" + (p.name || "") + "</td>"
-          + "<td title=\"" + (p.title || "") + "\">" + (p.title || "") + "</td>"
-          + "<td title=\"" + (p.company || "") + "\">" + (p.company || "") + "</td></tr>";
+    const safeName = escapeHTML(p.name || "");
+    const safeUrl = escapeHTML(p.linkedinUrl || "");
+    const urlCell = safeUrl
+      ? "<a href=\"" + safeUrl + "\" target=\"_blank\" rel=\"noreferrer\">Profile</a>"
+      : "";
+    html += "<tr><td title=\"" + safeName + "\">" + safeName + "</td><td title=\"" + safeUrl + "\">" + urlCell + "</td></tr>";
   }
   html += "</table>";
   if (prospects.length > 10) {
@@ -48,7 +103,6 @@ async function init() {
   renderProspects(prospects);
 }
 
-// Add current profile
 document.getElementById("scrape-btn").addEventListener("click", async () => {
   setStatus("");
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -58,72 +112,61 @@ document.getElementById("scrape-btn").addEventListener("click", async () => {
     return;
   }
 
-  chrome.tabs.sendMessage(tab.id, { action: "scrape" }, async (response) => {
-    if (chrome.runtime.lastError) {
-      setStatus("Could not scrape page. Try refreshing the LinkedIn tab.", true);
-      return;
-    }
-
-    if (!response || !response.name) {
-      setStatus("Could not find profile data on this page.", true);
-      return;
-    }
-
-    const prospects = await loadProspects();
-
-    // Check for duplicates by name
-    const exists = prospects.some(
-      (p) => p.name.toLowerCase() === response.name.toLowerCase()
-    );
-    if (exists) {
-      setStatus("This prospect is already saved.", true);
-      return;
-    }
-
-    prospects.push({
-      name: response.name,
-      title: response.title,
-      company: response.company,
-    });
-
-    chrome.storage.local.set({ prospects }, () => {
-      renderProspects(prospects);
-      setStatus("Added: " + response.name);
-    });
-  });
-});
-
-// Export CSV
-document.getElementById("export-btn").addEventListener("click", async () => {
   const prospects = await loadProspects();
-  if (prospects.length === 0) {
-    setStatus("No prospects to export.", true);
+  const linkedinUrl = normalizeLinkedInProfileUrl(tab.url);
+  const name = deriveNameFromTab(tab);
+  if (!linkedinUrl) {
+    setStatus("Could not read profile URL from this page.", true);
     return;
   }
 
-  let csv = "Name,Title,Company\n";
+  const existingIndex = prospects.findIndex((p) => (p.linkedinUrl || "") === linkedinUrl);
+  if (existingIndex !== -1) {
+    if (name && !prospects[existingIndex].name) {
+      prospects[existingIndex].name = name;
+      chrome.storage.local.set({ prospects }, () => {
+        renderProspects(prospects);
+        setStatus("Updated saved profile.");
+      });
+      return;
+    }
+    setStatus("This profile URL is already saved.", true);
+    return;
+  }
+
+  prospects.push({ name, linkedinUrl });
+  chrome.storage.local.set({ prospects }, () => {
+    renderProspects(prospects);
+    setStatus("Added profile.");
+  });
+});
+
+document.getElementById("export-btn").addEventListener("click", async () => {
+  const prospects = await loadProspects();
+  if (prospects.length === 0) {
+    setStatus("No profiles to export.", true);
+    return;
+  }
+
+  let csv = "Name,LinkedIn URL\n";
   for (const p of prospects) {
-    csv += escapeCSV(p.name) + "," + escapeCSV(p.title) + "," + escapeCSV(p.company) + "\n";
+    csv += escapeCSV(p.name) + "," + escapeCSV(p.linkedinUrl) + "\n";
   }
 
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
 
-  chrome.downloads.download(
-    { url, filename: "Prospects.csv", saveAs: false },
-    () => {
-      setStatus("Exported Prospects.csv to Downloads.");
-      URL.revokeObjectURL(url);
-    }
-  );
+  chrome.downloads.download({ url, filename: "Prospects.csv", saveAs: false }, () => {
+    setStatus("Exported Prospects.csv to Downloads.");
+    URL.revokeObjectURL(url);
+  });
 });
 
-// Clear all
 document.getElementById("clear-btn").addEventListener("click", () => {
-  if (confirm("Clear all saved prospects?")) {
+  if (confirm("Clear all saved profiles?")) {
     chrome.storage.local.set({ prospects: [] }, () => {
       renderProspects([]);
-      setStatus("All prospects cleared.");
+      setStatus("All profiles cleared.");
     });
   }
 });
